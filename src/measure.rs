@@ -213,6 +213,12 @@ fn loaded_libraries(program: &Path) -> Result<Vec<std::path::PathBuf>> {
 }
 
 /// The shared libraries a program loads, as absolute paths.
+///
+/// This one cannot fail, because a missing or unhappy `ldd` is a correct answer of "no
+/// shared libraries found here" rather than an error. It keeps the `Result` anyway so that
+/// the signature matches the macOS version, which can genuinely fail, and so that the caller
+/// does not need to know which platform it is on.
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(not(target_os = "macos"))]
 fn loaded_libraries(program: &Path) -> Result<Vec<std::path::PathBuf>> {
     // A statically linked runtime makes `ldd` exit non zero, and that is a correct answer of
