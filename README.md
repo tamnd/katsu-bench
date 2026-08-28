@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu ran 1 of the 27 axes in the last full run, and the one it ran is distribution size, which does not require running a JavaScript program. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu ran 2 of the 27 axes in the last full run. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -31,6 +31,25 @@ The compute workloads, in process time in milliseconds, then peak resident memor
 Node and Deno are within noise of each other on five of the six, which is what you would expect from two runtimes sharing an engine. Bun wins five of six on time and all six on memory, and loses `nbody` by twenty percent, which is the workload that is nothing but floating point arithmetic and property access on fixed shape objects. The whole table, with interquartile ranges, every axis and every failure reason, is in `results/baselines/2026-08-28-m4-macos.md`. That file is committed and every later baseline will be too, because a baseline that only exists on the machine that took it is not a baseline. The raw JSON with every individual sample stays out of the repository, because it is machine output that nobody reads in a diff and it would grow the history faster than the code does.
 
 Bun is the rival to beat on every axis here, and the goal is ten times better than that, not ten times better than Node.
+
+## The first axis katsu can actually run
+
+katsu 0.0.5 landed `console.log` and a `katsu run` that does what it says, which is the smallest thing a runtime can do that this harness can time. Cold start is now a real row rather than a failure reason. Same machine, same day, 25 runs after 3 discarded, in `results/baselines/2026-08-29-m4-macos.md`.
+
+| Runtime | Version | Median | IQR | Min | Max |
+|---|---|---:|---:|---:|---:|
+| katsu | 0.0.5 | 1.55 ms | 0.09 | 1.42 | 3.31 |
+| bun | 1.4.0 | 4.97 ms | 0.82 | 4.69 | 23.70 |
+| deno | 2.9.6 | 12.49 ms | 0.73 | 11.46 | 67.49 |
+| node | 26.8.1 | 24.63 ms | 1.98 | 22.87 | 62.22 |
+
+15.9x faster than Node and 3.2x faster than Bun, which is the rival that matters on this axis. The scoreboard reads that as 3.21x ahead with 3.1x left to find, because the goal is ten times better than the best rival and Bun is the best rival.
+
+Look at the maximum column before reading too much into any of it. Every runtime here has a worst case several times its own median, Node and Deno by a factor of nearly three and six, because a first run on a cold page cache is a different measurement from a run on a warm one and 25 runs is enough to catch one or two of those. That is why the published figure is the median with an interquartile range next to it rather than a mean, and it is the reason the IQR column exists at all.
+
+Read it with the obvious caveat attached, and the caveat is large. **katsu is ahead here because it does less, not because it is better.** There is no module system, no `process`, no event loop, no filesystem and no standard library beyond `console.log`, and Node is carrying every one of those inside its 23.83 ms. This number is a starting position rather than a result, and the interesting question is not whether we win today but how much of the lead survives the next eight milestones landing on top of it. That is precisely why the row is recorded now, while the answer is still unknown to us.
+
+The idle memory axis is still a failure reason, and for a good reason: a process with no event loop cannot idle. katsu exits after 410 ms rather than staying up, so there is no idle to sample. That row starts working in M2 and not before.
 
 ## The rules come before the numbers
 

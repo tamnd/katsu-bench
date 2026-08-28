@@ -281,7 +281,7 @@ fn write_scoreboard_caveat(out: &mut String, report: &RunReport) {
     } else {
         let _ = writeln!(
             out,
-            "**katsu ran {} of the {total} axes in this report.** The {unrun} it did not run are marked as such above, and any axis it appears to win is one that does not require running a JavaScript program. Read the wins with that in mind until this paragraph goes away.",
+            "**katsu ran {} of the {total} axes in this report.** The {unrun} it did not run are marked as such above. Every win here is a win on an axis where katsu is doing less work than the runtime it beat, because most of a runtime is not built yet, so read them as a starting position rather than as a result. This paragraph goes away when the number that did not run reaches zero.",
             total - unrun
         );
     }
