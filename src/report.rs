@@ -72,12 +72,30 @@ pub struct RuntimeResult {
 pub struct AxisResult {
     /// Human readable axis name.
     pub axis: String,
+    /// What this axis belongs with, when several axes describe one workload.
+    ///
+    /// The compute workloads produce four numbers each and all four are about the same run, so
+    /// they are printed as four columns of one table rather than as four tables that a reader
+    /// has to hold in their head at once. Anything with no group prints on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The column heading to use inside a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
     /// The unit the numbers are in.
     pub unit: String,
     /// Whether smaller is better.
     pub lower_is_better: bool,
     /// One entry per runtime, in the order they were measured.
     pub runtimes: Vec<RuntimeResult>,
+}
+
+impl AxisResult {
+    /// The column heading for this axis inside its group.
+    fn column(&self) -> String {
+        let metric = self.metric.as_deref().unwrap_or(&self.axis);
+        format!("{metric} ({})", self.unit)
+    }
 }
 
 /// A whole run.
@@ -109,57 +127,301 @@ pub fn markdown(report: &RunReport) -> String {
         );
     }
 
-    for axis in &report.axes {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "## {} ({})", axis.axis, axis.unit);
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "| Runtime | Version | Median | IQR | p25 | p75 | Min | Max | Runs |"
-        );
-        let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|");
+    write_scoreboard(&mut out, report);
 
-        for entry in &axis.runtimes {
-            match &entry.summary {
-                Some(s) => {
-                    let _ = writeln!(
-                        out,
-                        "| `{}` | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {} |",
-                        entry.runtime,
-                        entry.version,
-                        s.median,
-                        s.iqr(),
-                        s.p25,
-                        s.p75,
-                        s.min,
-                        s.max,
-                        s.runs
-                    );
-                }
-                None => {
-                    let _ = writeln!(
-                        out,
-                        "| `{}` | {} | not measured | | | | | | |",
-                        entry.runtime, entry.version
-                    );
-                }
+    let mut rest = report.axes.as_slice();
+    while let Some(first) = rest.first() {
+        match &first.group {
+            None => {
+                write_single(&mut out, first);
+                rest = &rest[1..];
             }
-        }
-
-        for entry in &axis.runtimes {
-            if let Some(note) = &entry.note {
-                let _ = writeln!(out);
-                let _ = writeln!(out, "`{}` could not be measured: {note}", entry.runtime);
+            Some(group) => {
+                let end = rest
+                    .iter()
+                    .position(|axis| axis.group.as_deref() != Some(group.as_str()))
+                    .unwrap_or(rest.len());
+                write_group(&mut out, group, &rest[..end]);
+                rest = &rest[end..];
             }
-        }
-
-        if let Some(verdict) = verdict(axis) {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "{verdict}");
         }
     }
 
     out
+}
+
+/// The name of the runtime this repository exists to measure.
+const OURS: &str = "katsu";
+
+/// How far past the best rival the goal is.
+const GOAL: f64 = 10.0;
+
+/// The scoreboard against the goal, axis by axis.
+///
+/// This is the section the whole repository is for. Every axis gets one line saying where we
+/// stand against the best rival on that axis and how much is left to find, including the axes
+/// where we are behind and the axes where we cannot run the workload at all. An axis katsu
+/// cannot run yet says exactly that, because the alternative is a scoreboard that gets shorter
+/// every time we fail at something, which would climb towards the goal by forgetting.
+fn write_scoreboard(out: &mut String, report: &RunReport) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Distance to the goal");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "The goal is ten times better than the best rival on every axis, not ten times better than the worst one. This table is regenerated from the same run as everything below it."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "| Axis | katsu | Best rival | Standing | Left to find |"
+    );
+    let _ = writeln!(out, "|---|---:|---|---|---|");
+
+    for axis in &report.axes {
+        let name = match (&axis.group, &axis.metric) {
+            (Some(group), Some(metric)) => format!("{group}, {metric}"),
+            _ => axis.axis.clone(),
+        };
+
+        let ours = axis.runtimes.iter().find(|r| r.runtime == OURS);
+        let best_rival = axis
+            .runtimes
+            .iter()
+            .filter(|r| r.runtime != OURS)
+            .filter_map(|r| r.summary.map(|s| (r, s)))
+            .min_by(|a, b| order(a.1.median, b.1.median, axis.lower_is_better));
+
+        let Some((rival, rival_summary)) = best_rival else {
+            let _ = writeln!(out, "| {name} ({}) | | no rival measured | | |", axis.unit);
+            continue;
+        };
+
+        let rival_cell = format!("`{}` {:.2}", rival.runtime, rival_summary.median);
+
+        match ours.and_then(|r| r.summary) {
+            None => {
+                let reason = ours
+                    .and_then(|r| r.note.as_deref())
+                    .map_or_else(|| "not installed".to_owned(), short_reason);
+                let _ = writeln!(
+                    out,
+                    "| {name} ({}) | not yet | {rival_cell} | cannot run this yet | all of it. {reason} |",
+                    axis.unit
+                );
+            }
+            Some(mine) => {
+                let ratio = if axis.lower_is_better {
+                    rival_summary.median / mine.median
+                } else {
+                    mine.median / rival_summary.median
+                };
+                // A ratio against zero is infinite, and infinity in the standing column has
+                // never once meant we were infinitely better at something. It means the
+                // measurement did not measure anything, so it says that instead.
+                if !ratio.is_finite() || ratio <= 0.0 {
+                    let _ = writeln!(
+                        out,
+                        "| {name} ({}) | {:.2} | {rival_cell} | not comparable, one side measured zero | unknown |",
+                        axis.unit, mine.median
+                    );
+                    continue;
+                }
+                let standing = if ratio >= 1.0 {
+                    format!("{ratio:.2}x ahead")
+                } else {
+                    format!("{:.2}x behind", 1.0 / ratio)
+                };
+                let left = if ratio >= GOAL {
+                    "goal reached".to_owned()
+                } else {
+                    format!("{:.1}x", GOAL / ratio)
+                };
+                let _ = writeln!(
+                    out,
+                    "| {name} ({}) | {:.2} | {rival_cell} | {standing} | {left} |",
+                    axis.unit, mine.median
+                );
+            }
+        }
+    }
+
+    write_scoreboard_caveat(out, report);
+}
+
+/// Say how much of the scoreboard katsu is not actually competing on.
+///
+/// Without this, a partly built runtime reads as winning. The axes it can win before it can run
+/// a program are the ones that do not require running a program, and a reader looking at a row
+/// saying `goal reached` deserves to be told in the same breath that most of the suite did not
+/// run at all. This paragraph disappears on its own the day every workload runs.
+fn write_scoreboard_caveat(out: &mut String, report: &RunReport) {
+    let total = report.axes.len();
+    let unrun = report
+        .axes
+        .iter()
+        .filter(|axis| {
+            axis.runtimes
+                .iter()
+                .find(|r| r.runtime == OURS)
+                .is_none_or(|r| r.summary.is_none())
+        })
+        .count();
+
+    if unrun == 0 {
+        return;
+    }
+
+    let _ = writeln!(out);
+    if unrun == total {
+        let _ = writeln!(
+            out,
+            "**katsu ran none of the {total} axes in this report.** Everything above is a baseline for the rivals and nothing above is a result for us."
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "**katsu ran {} of the {total} axes in this report.** The {unrun} it did not run are marked as such above, and any axis it appears to win is one that does not require running a JavaScript program. Read the wins with that in mind until this paragraph goes away.",
+            total - unrun
+        );
+    }
+}
+
+/// The part of a failure worth putting in a table cell.
+///
+/// A runtime that cannot run a workload says so through several layers, each of which adds its
+/// own prefix, so the message arrives as `katsu could not run fib: katsu: syntax error:
+/// compute/fib.js:23:45: an object literal is not supported yet`. Everything before the last
+/// colon is context the surrounding row already gives. What is left is the actual reason, and
+/// the full message is still printed under the table it belongs to.
+fn short_reason(note: &str) -> String {
+    let line = note.lines().next().unwrap_or(note).trim();
+    line.rsplit_once(": ")
+        .map_or(line, |(_, tail)| tail)
+        .to_owned()
+}
+
+/// Order two medians so that the better one sorts first.
+fn order(left: f64, right: f64, lower_is_better: bool) -> std::cmp::Ordering {
+    let ordering = left
+        .partial_cmp(&right)
+        .unwrap_or(std::cmp::Ordering::Equal);
+    if lower_is_better {
+        ordering
+    } else {
+        ordering.reverse()
+    }
+}
+
+/// One axis on its own, with the full distribution rather than only the median.
+fn write_single(out: &mut String, axis: &AxisResult) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## {} ({})", axis.axis, axis.unit);
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "| Runtime | Version | Median | IQR | p25 | p75 | Min | Max | Runs |"
+    );
+    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|");
+
+    for entry in &axis.runtimes {
+        match &entry.summary {
+            Some(s) => {
+                let _ = writeln!(
+                    out,
+                    "| `{}` | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {} |",
+                    entry.runtime,
+                    entry.version,
+                    s.median,
+                    s.iqr(),
+                    s.p25,
+                    s.p75,
+                    s.min,
+                    s.max,
+                    s.runs
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "| `{}` | {} | not measured | | | | | | |",
+                    entry.runtime, entry.version
+                );
+            }
+        }
+    }
+
+    write_notes(out, axis);
+
+    if let Some(verdict) = verdict(axis) {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{verdict}");
+    }
+}
+
+/// Several axes that describe one workload, as one table with a column each.
+///
+/// Medians only, because a table with four metrics and six distribution columns each is
+/// forty numbers a row and nobody reads it. The full distributions are in the JSON.
+fn write_group(out: &mut String, group: &str, axes: &[AxisResult]) {
+    let Some(first) = axes.first() else {
+        return;
+    };
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## {group}");
+    let _ = writeln!(out);
+
+    let _ = write!(out, "| Runtime | Version |");
+    for axis in axes {
+        let _ = write!(out, " {} |", axis.column());
+    }
+    let _ = writeln!(out);
+    let _ = write!(out, "|---|---|");
+    for _ in axes {
+        let _ = write!(out, "---:|");
+    }
+    let _ = writeln!(out);
+
+    for (index, entry) in first.runtimes.iter().enumerate() {
+        let _ = write!(out, "| `{}` | {} |", entry.runtime, entry.version);
+        for axis in axes {
+            // Indexed rather than searched by name, because every axis in a group was filled in
+            // by the same loop over the same runtimes and so holds them in the same order.
+            match axis.runtimes.get(index).and_then(|r| r.summary) {
+                Some(s) => {
+                    let _ = write!(out, " {:.2} |", s.median);
+                }
+                None => {
+                    let _ = write!(out, " not measured |");
+                }
+            }
+        }
+        let _ = writeln!(out);
+    }
+
+    write_notes(out, first);
+
+    for axis in axes {
+        if let Some(verdict) = verdict(axis) {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "{}. {verdict}",
+                axis.metric.as_deref().unwrap_or("This")
+            );
+        }
+    }
+}
+
+/// Why any runtime in this axis could not be measured.
+fn write_notes(out: &mut String, axis: &AxisResult) {
+    for entry in &axis.runtimes {
+        if let Some(note) = &entry.note {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "`{}` could not be measured: {note}", entry.runtime);
+        }
+    }
 }
 
 /// State plainly who won this axis, or say that the axis did not separate them.
@@ -246,9 +508,33 @@ mod tests {
     fn axis(runtimes: Vec<RuntimeResult>) -> AxisResult {
         AxisResult {
             axis: "Cold start".into(),
+            group: None,
+            metric: None,
             unit: "ms".into(),
             lower_is_better: true,
             runtimes,
+        }
+    }
+
+    fn grouped(name: &str, metric: &str, unit: &str, runtimes: Vec<RuntimeResult>) -> AxisResult {
+        AxisResult {
+            axis: format!("{name}, {metric}"),
+            group: Some(format!("Compute: {name}")),
+            metric: Some(metric.into()),
+            unit: unit.into(),
+            lower_is_better: true,
+            runtimes,
+        }
+    }
+
+    fn machine() -> Machine {
+        Machine {
+            os: "test".into(),
+            os_version: "0".into(),
+            cpu: "test".into(),
+            cores: 1,
+            memory_mib: 1,
+            ci: false,
         }
     }
 
@@ -292,14 +578,7 @@ mod tests {
         failed.note = Some("not installed".into());
 
         let report = RunReport {
-            machine: Machine {
-                os: "test".into(),
-                os_version: "0".into(),
-                cpu: "test".into(),
-                cores: 1,
-                memory_mib: 1,
-                ci: false,
-            },
+            machine: machine(),
             axes: vec![axis(vec![entry("katsu", &[1.0, 1.1, 1.2]), failed])],
         };
 
@@ -317,17 +596,116 @@ mod tests {
 
     #[test]
     fn a_ci_run_labels_itself_as_untrustworthy_for_comparison() {
+        let mut on_ci = machine();
+        on_ci.ci = true;
         let report = RunReport {
-            machine: Machine {
-                os: "test".into(),
-                os_version: "0".into(),
-                cpu: "test".into(),
-                cores: 1,
-                memory_mib: 1,
-                ci: true,
-            },
+            machine: on_ci,
             axes: vec![],
         };
         assert!(markdown(&report).contains("shared CI runner"));
+    }
+
+    #[test]
+    fn the_metrics_of_one_workload_are_one_table_with_a_column_each() {
+        let report = RunReport {
+            machine: machine(),
+            axes: vec![
+                grouped(
+                    "fib",
+                    "In process",
+                    "ms",
+                    vec![entry("node", &[60.0, 61.0]), entry("bun", &[45.0, 46.0])],
+                ),
+                grouped(
+                    "fib",
+                    "Peak memory",
+                    "MiB",
+                    vec![entry("node", &[52.0, 53.0]), entry("bun", &[70.0, 71.0])],
+                ),
+            ],
+        };
+
+        let table = markdown(&report);
+        assert!(table.contains("## Compute: fib"), "{table}");
+        assert!(table.contains("In process (ms)"), "{table}");
+        assert!(table.contains("Peak memory (MiB)"), "{table}");
+        assert_eq!(
+            table.matches("## Compute: fib").count(),
+            1,
+            "the two metrics belong in one table, not two"
+        );
+        // One row per runtime, holding both metrics, so the row must carry both medians.
+        assert!(
+            table.contains("| `bun` | 1.0.0 | 45.50 | 70.50 |"),
+            "{table}"
+        );
+    }
+
+    #[test]
+    fn the_scoreboard_says_plainly_when_we_cannot_run_the_workload_at_all() {
+        let mut ours = entry("katsu", &[1.0]);
+        ours.summary = None;
+        ours.note = Some("katsu could not run fib: call is not implemented yet".into());
+
+        let report = RunReport {
+            machine: machine(),
+            axes: vec![grouped(
+                "fib",
+                "In process",
+                "ms",
+                vec![ours, entry("node", &[60.0, 61.0])],
+            )],
+        };
+
+        let table = markdown(&report);
+        assert!(table.contains("Distance to the goal"), "{table}");
+        assert!(table.contains("cannot run this yet"), "{table}");
+        assert!(table.contains("call is not implemented yet"), "{table}");
+    }
+
+    #[test]
+    fn a_failure_is_shortened_to_the_part_the_row_does_not_already_say() {
+        assert_eq!(
+            super::short_reason(
+                "katsu could not run fib: katsu: syntax error: compute/fib.js:23:45: an object literal is not supported yet"
+            ),
+            "an object literal is not supported yet"
+        );
+        // Nothing to strip, so nothing is stripped rather than the whole message vanishing.
+        assert_eq!(super::short_reason("not installed"), "not installed");
+    }
+
+    #[test]
+    fn the_scoreboard_measures_us_against_the_best_rival_and_not_the_worst() {
+        let report = RunReport {
+            machine: machine(),
+            axes: vec![axis(vec![
+                entry("katsu", &[5.0, 5.0, 5.0]),
+                entry("bun", &[10.0, 10.0, 10.0]),
+                entry("node", &[100.0, 100.0, 100.0]),
+            ])],
+        };
+
+        let table = markdown(&report);
+        assert!(
+            table.contains("`bun` 10.00"),
+            "the best rival is bun: {table}"
+        );
+        assert!(table.contains("2.00x ahead"), "{table}");
+        // Ten times the best rival is the goal, so being twice as fast leaves five times to
+        // find, not twenty times as the comparison against node would have suggested.
+        assert!(table.contains("| 5.0x |"), "{table}");
+    }
+
+    #[test]
+    fn the_scoreboard_states_a_loss_as_a_loss() {
+        let report = RunReport {
+            machine: machine(),
+            axes: vec![axis(vec![
+                entry("katsu", &[40.0, 40.0, 40.0]),
+                entry("node", &[10.0, 10.0, 10.0]),
+            ])],
+        };
+        assert!(markdown(&report).contains("4.00x behind"));
     }
 }

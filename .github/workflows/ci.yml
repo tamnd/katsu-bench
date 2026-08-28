@@ -43,7 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
       - uses: actions/setup-node@v7.0.0
         with:
-          node-version: "24"
+          node-version: "26"
       - run: cargo test --all-targets
 
   smoke:
@@ -54,7 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
       - uses: actions/setup-node@v7.0.0
         with:
-          node-version: "24"
+          node-version: "26"
       - uses: oven-sh/setup-bun@v2.2.0
       - uses: denoland/setup-deno@v2.0.5
         with:
@@ -64,6 +64,19 @@ jobs:
       # runtimes. The published comparison does not come from here, and the report says so
       # itself because it detects that it is on a CI runner.
       - run: ./target/release/katsu-bench run --runs 5 --markdown results/ci.md
+      # The compute axis again on its own, with one run and no warmup. This is not about the
+      # timings, a shared runner cannot produce timings worth reading. It is about the
+      # checksums. Every runtime has to compute the same answer for every workload, and the
+      # harness records a disagreement as a note rather than as a crash because a report should
+      # print what happened rather than give up. That is the right behaviour for a report and
+      # the wrong behaviour for a gate, so the gate is here.
+      - name: Compute axis, checking every runtime agrees on every answer
+        run: |
+          ./target/release/katsu-bench run --axis compute --runs 1 --warmup 0 --out results/ci-compute.json --markdown results/ci-compute.md
+          if grep -qE 'computed .+ on .+, but .+ computed' results/ci-compute.json; then
+            echo "A runtime disagreed about a workload checksum. The full table is in the smoke-results artifact."
+            exit 1
+          fi
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: smoke-results

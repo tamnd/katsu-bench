@@ -4,6 +4,7 @@
 //! what a container's memory limit counts, and the number that matters to somebody paying
 //! for a container is the resident set the kernel sees.
 
+use std::io::Read as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 /// What one run of one process cost.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Measurement {
     /// Wall clock from spawn to exit, in milliseconds.
     pub wall_ms: f64,
@@ -19,6 +20,23 @@ pub struct Measurement {
     pub peak_rss_bytes: u64,
     /// Whether the process exited zero.
     pub succeeded: bool,
+    /// Everything the child wrote to standard output.
+    pub stdout: String,
+    /// Everything the child wrote to standard error, which is where a runtime puts the stack
+    /// trace that explains why it could not run the workload.
+    pub stderr: String,
+}
+
+impl Measurement {
+    /// The first line of standard error, for putting a failure in a table cell.
+    pub fn first_error_line(&self) -> String {
+        self.stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("no output on standard error")
+            .to_owned()
+    }
 }
 
 /// Run a process to completion and measure it.
@@ -26,20 +44,35 @@ pub struct Measurement {
 /// The child's peak resident set comes from `wait4`, which is the kernel's own accounting
 /// rather than a sample taken from outside at whatever moment we happened to look. Polling
 /// cannot see the peak of a process that lives for eight milliseconds.
+///
+/// Both output streams are drained, and they are drained on two threads. A single thread reading
+/// one pipe to the end while the other fills up is a deadlock, and it is the kind that only shows
+/// up once a runtime starts printing more than a pipe buffer's worth of deprecation warnings.
 pub fn run_once(program: &Path, args: &[&str], cwd: &Path) -> Result<Measurement> {
     let started = Instant::now();
 
-    let child = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("spawning {}", program.display()))?;
 
     #[allow(clippy::cast_possible_wrap)]
     let pid = child.id() as libc::pid_t;
+
+    let mut out = child.stdout.take().context("stdout was piped")?;
+    let mut err = child.stderr.take().context("stderr was piped")?;
+    let draining_stderr = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = err.read_to_string(&mut text);
+        text
+    });
+    let mut stdout = String::new();
+    let _ = out.read_to_string(&mut stdout);
+    let stderr = draining_stderr.join().unwrap_or_default();
 
     let mut status: libc::c_int = 0;
     // SAFETY: `rusage` is a plain C struct of integers with no invalid bit patterns, so an
@@ -66,6 +99,8 @@ pub fn run_once(program: &Path, args: &[&str], cwd: &Path) -> Result<Measurement
         wall_ms: duration_ms(wall),
         peak_rss_bytes: max_rss_bytes(&usage),
         succeeded: exited_zero(status),
+        stdout,
+        stderr,
     })
 }
 
@@ -86,8 +121,11 @@ pub fn run_until_idle(
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
+        // Both streams discarded rather than piped. Nobody is reading them here, and a child
+        // that fills an unread pipe blocks on the write, which would be recorded as the memory
+        // of a process sitting idle when it is really the memory of a process stuck.
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("spawning {}", program.display()))?;
 
@@ -95,6 +133,25 @@ pub fn run_until_idle(
     let pid = child.id() as libc::pid_t;
 
     std::thread::sleep(settle);
+
+    // Whether it is still running, asked before the sample is taken.
+    //
+    // A process that has already exited still reaps successfully and still has a `ru_maxrss`,
+    // so without this check a runtime that cannot run the workload at all is recorded as using
+    // no memory while idle, which reads as the best result in the table. That is precisely
+    // backwards, and it is the sort of flattering nonsense this repository exists not to print.
+    let mut early: libc::c_int = 0;
+    // SAFETY: `pid` is our own child and has not been reaped. `WNOHANG` makes this return
+    // immediately with zero if the child is still running, and `early` is a live local.
+    let exited = unsafe { libc::waitpid(pid, &raw mut early, libc::WNOHANG) };
+    if exited == pid {
+        drop(child);
+        bail!(
+            "{} exited after {:.0} ms instead of staying idle, so there was no idle to measure",
+            program.display(),
+            duration_ms(started.elapsed())
+        );
+    }
 
     let sampled = sample_rss(pid);
 
@@ -125,6 +182,10 @@ pub fn run_until_idle(
         wall_ms: duration_ms(started.elapsed()),
         peak_rss_bytes: resident,
         succeeded: true,
+        // Not collected here. This process is killed rather than allowed to finish, so whatever
+        // it had written so far says nothing about whether it worked.
+        stdout: String::new(),
+        stderr: String::new(),
     })
 }
 
@@ -347,6 +408,21 @@ mod tests {
             whole > 8 * 1024 * 1024,
             "a JavaScript engine does not fit in 8 MiB, so {whole} bytes means the linked \
              libraries were missed"
+        );
+    }
+
+    #[test]
+    fn a_process_that_died_early_is_an_error_and_not_a_runtime_that_uses_no_memory() {
+        let error = run_until_idle(
+            Path::new("/usr/bin/true"),
+            &[],
+            Path::new("."),
+            Duration::from_millis(150),
+        )
+        .expect_err("a process that exits immediately has no idle to measure");
+        assert!(
+            format!("{error}").contains("instead of staying idle"),
+            "{error}"
         );
     }
 

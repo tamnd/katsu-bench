@@ -1,4 +1,6 @@
 /target
-/results
+/results/*
+!/results/baselines
+/results/baselines/*.json
 node_modules
 .DS_Store

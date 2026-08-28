@@ -14,6 +14,33 @@ pub struct Runtime {
     pub path: PathBuf,
     /// Whatever it printed for `--version`, cleaned up.
     pub version: String,
+    /// Arguments that go in front of the script path.
+    pub leading_args: Vec<String>,
+}
+
+impl Runtime {
+    /// The full argument list for running one script.
+    pub fn args_for<'a>(&'a self, script: &'a str) -> Vec<&'a str> {
+        self.leading_args
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(script))
+            .collect()
+    }
+}
+
+/// What has to go in front of the script path for a given runtime.
+///
+/// Node, Bun and Deno all take a bare path, which is the interface every JavaScript runtime has
+/// had for fifteen years. Ours does not yet, so it gets `run` put in front of it here. This is a
+/// compatibility gap rather than a benchmark detail, and it is the harness's job to be honest
+/// about it rather than to report our own CLI as unable to run JavaScript. It goes away when
+/// `katsu hello.js` works, and this function is the reminder that it should.
+fn leading_args(name: &str) -> Vec<String> {
+    match name {
+        "katsu" => vec!["run".to_owned()],
+        _ => Vec::new(),
+    }
 }
 
 /// The runtimes we compare against, in the order the tables list them.
@@ -61,6 +88,7 @@ pub fn resolve(name: &str) -> Option<Runtime> {
         } else {
             version
         },
+        leading_args: leading_args(name),
     })
 }
 
@@ -95,5 +123,24 @@ mod tests {
     fn discovery_leaves_out_what_is_not_installed_rather_than_inventing_it() {
         let found = discover(Some(&["definitely-not-a-real-runtime-binary".to_string()]));
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn the_established_runtimes_take_a_bare_script_path_and_ours_does_not_yet() {
+        assert!(super::leading_args("node").is_empty());
+        assert!(super::leading_args("bun").is_empty());
+        assert!(super::leading_args("deno").is_empty());
+        assert_eq!(super::leading_args("katsu"), ["run"]);
+    }
+
+    #[test]
+    fn the_script_path_comes_last_so_the_runtime_treats_it_as_the_program() {
+        let katsu = super::Runtime {
+            name: "katsu".into(),
+            path: "/nowhere/katsu".into(),
+            version: "0.0.3".into(),
+            leading_args: super::leading_args("katsu"),
+        };
+        assert_eq!(katsu.args_for("hello.js"), ["run", "hello.js"]);
     }
 }
