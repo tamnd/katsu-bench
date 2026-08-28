@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: Swatinem/rust-cache@v2.9.2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # Both platforms, because the measurement code is the part most likely to be subtly
+      # wrong per platform. `ru_maxrss` is bytes on macOS and kilobytes on Linux, resident
+      # set is sampled from `/proc` on one and from `ps` on the other, and the linked library
+      # listing uses the dynamic linker on one and `ldd` on the other.
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24"
+      - run: cargo test --all-targets
+
+  smoke:
+    name: Smoke run against real runtimes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: denoland/setup-deno@v2.0.5
+        with:
+          deno-version: v2.x
+      - run: cargo build --release
+      # A small run, only to prove the harness still produces numbers against three real
+      # runtimes. The published comparison does not come from here, and the report says so
+      # itself because it detects that it is on a CI runner.
+      - run: ./target/release/katsu-bench run --runs 5 --markdown results/ci.md
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: smoke-results
+          path: results/
