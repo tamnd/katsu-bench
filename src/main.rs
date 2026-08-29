@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use report::{AxisResult, Machine, RunReport, RuntimeResult};
+use report::{AxisResult, Load, Machine, RunReport, RuntimeResult};
 use runtime::Runtime;
 use stats::Summary;
 
@@ -218,6 +218,7 @@ fn measure_all(
         bail!("no workloads directory at {}", workloads.display());
     }
 
+    let started_at = Load::one_minute();
     let mut results = Vec::new();
 
     for &axis in axes {
@@ -259,6 +260,10 @@ fn measure_all(
 
     Ok(RunReport {
         machine: Machine::here(),
+        load: Some(Load {
+            start: started_at,
+            end: Load::one_minute(),
+        }),
         axes: results,
     })
 }

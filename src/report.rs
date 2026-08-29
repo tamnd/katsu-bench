@@ -54,6 +54,39 @@ impl Machine {
     }
 }
 
+/// What else the machine was doing while the numbers were being taken.
+///
+/// Sampled twice rather than once, because a run takes twenty minutes and the interesting
+/// question is not what the load was at any single instant but whether the machine stayed the
+/// same machine from the first measurement to the last. A run that starts quiet and ends busy
+/// has measured the last runtime under conditions the first one never saw.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Load {
+    /// One minute load average when the run started.
+    pub start: f64,
+    /// One minute load average when the run finished.
+    pub end: f64,
+}
+
+impl Load {
+    /// The one minute load average right now.
+    pub fn one_minute() -> f64 {
+        sysinfo::System::load_average().one
+    }
+
+    /// Whether this much load is enough to distort the numbers on a machine with this many cores.
+    ///
+    /// Half the cores is the line, and it is a judgement rather than a measured threshold. Below
+    /// it there is a spare core for the runtime under test even at the worst moment, above it the
+    /// runtime is competing for one, and the difference shows up as a longer wall clock for
+    /// everybody rather than as a difference between runtimes.
+    #[allow(clippy::cast_precision_loss)]
+    fn heavy(self, cores: usize) -> bool {
+        let line = cores as f64 / 2.0;
+        self.start > line || self.end > line
+    }
+}
+
 /// One runtime's result on one axis.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RuntimeResult {
@@ -103,6 +136,9 @@ impl AxisResult {
 pub struct RunReport {
     /// Where it was taken.
     pub machine: Machine,
+    /// What else the machine was doing, absent in results taken before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<Load>,
     /// What was measured.
     pub axes: Vec<AxisResult>,
 }
@@ -119,6 +155,21 @@ pub fn markdown(report: &RunReport) -> String {
         "Machine: {} {}, {}, {} cores, {} MiB.",
         machine.os, machine.os_version, machine.cpu, machine.cores, machine.memory_mib
     );
+    if let Some(load) = report.load {
+        let _ = writeln!(
+            out,
+            "Load average: {:.2} when the run started, {:.2} when it finished.",
+            load.start, load.end
+        );
+        if load.heavy(machine.cores) {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "**The machine was busy.** A one minute load average that high on {} cores means every runtime here was competing for a core with something else, so every absolute time in this report is inflated and none of them should be compared against a figure taken on a quiet machine. The ratios between runtimes survive better than the absolutes do, because the runtimes were interleaved and all of them paid the same tax, but they carry an error bar too. This paragraph appears when the load passes half the core count and it is the reason to move the published numbers onto dedicated hardware.",
+                machine.cores
+            );
+        }
+    }
     if machine.ci {
         let _ = writeln!(out);
         let _ = writeln!(
@@ -493,7 +544,7 @@ fn verdict(axis: &AxisResult) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AxisResult, Machine, RunReport, RuntimeResult, markdown, verdict};
+    use super::{AxisResult, Load, Machine, RunReport, RuntimeResult, markdown, verdict};
     use crate::stats::Summary;
 
     fn entry(name: &str, samples: &[f64]) -> RuntimeResult {
@@ -579,6 +630,7 @@ mod tests {
 
         let report = RunReport {
             machine: machine(),
+            load: None,
             axes: vec![axis(vec![entry("katsu", &[1.0, 1.1, 1.2]), failed])],
         };
 
@@ -600,15 +652,52 @@ mod tests {
         on_ci.ci = true;
         let report = RunReport {
             machine: on_ci,
+            load: None,
             axes: vec![],
         };
         assert!(markdown(&report).contains("shared CI runner"));
     }
 
     #[test]
+    fn a_run_taken_on_a_busy_machine_says_so_and_a_quiet_one_does_not() {
+        let mut quiet = machine();
+        quiet.cores = 10;
+        let mut busy = quiet.clone();
+        busy.cores = 10;
+
+        let report = RunReport {
+            machine: quiet,
+            load: Some(Load {
+                start: 0.4,
+                end: 1.2,
+            }),
+            axes: vec![],
+        };
+        let table = markdown(&report);
+        assert!(
+            table.contains("Load average: 0.40 when the run started, 1.20 when it finished."),
+            "{table}"
+        );
+        assert!(!table.contains("machine was busy"), "{table}");
+
+        let report = RunReport {
+            machine: busy,
+            // Quiet at the start and busy at the end, which is the case the warning exists for.
+            // A run that only reports one load average would call this one clean and it is not.
+            load: Some(Load {
+                start: 0.4,
+                end: 7.1,
+            }),
+            axes: vec![],
+        };
+        assert!(markdown(&report).contains("machine was busy"));
+    }
+
+    #[test]
     fn the_metrics_of_one_workload_are_one_table_with_a_column_each() {
         let report = RunReport {
             machine: machine(),
+            load: None,
             axes: vec![
                 grouped(
                     "fib",
@@ -649,6 +738,7 @@ mod tests {
 
         let report = RunReport {
             machine: machine(),
+            load: None,
             axes: vec![grouped(
                 "fib",
                 "In process",
@@ -679,6 +769,7 @@ mod tests {
     fn the_scoreboard_measures_us_against_the_best_rival_and_not_the_worst() {
         let report = RunReport {
             machine: machine(),
+            load: None,
             axes: vec![axis(vec![
                 entry("katsu", &[5.0, 5.0, 5.0]),
                 entry("bun", &[10.0, 10.0, 10.0]),
@@ -701,6 +792,7 @@ mod tests {
     fn the_scoreboard_states_a_loss_as_a_loss() {
         let report = RunReport {
             machine: machine(),
+            load: None,
             axes: vec![axis(vec![
                 entry("katsu", &[40.0, 40.0, 40.0]),
                 entry("node", &[10.0, 10.0, 10.0]),

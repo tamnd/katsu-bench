@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.3 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.4 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -126,6 +126,28 @@ The failure reasons moved again, and one of them moved in a way worth calling ou
 
 The estimate in the previous section held up exactly. `fib` needed three names and got three names and now runs. `strings` was called out as not close, and it is not close: it needed most of `String.prototype`, a working sort and a collector, and it now demonstrates the collector part directly.
 
+## Where 0.1.4 stands, and what the load average turned out to be worth
+
+katsu 0.1.4 put the prototype in the shape, gave properties their attributes and bound `this` at call sites. None of that touches the call path, and `fib` is a call benchmark, so the honest expectation before running this was that nothing would move. Measured from the published 0.1.4 tarball, same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-29-m4-macos-katsu-0.1.4.md`.
+
+| Axis | katsu 0.1.4 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 2.76 | bun 8.80 | 3.19x ahead | 3.1x |
+| Baseline memory at idle (MiB) | not yet | bun 12.28 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.73 | bun 60.61 | 35.09x ahead | goal reached |
+| fib, in process (ms) | 1305.82 | bun 56.89 | 22.95x behind | 229.5x |
+| fib, wall clock (ms) | 1309.55 | bun 66.90 | 19.57x behind | 195.7x |
+| fib, runtime overhead (ms) | 3.66 | bun 9.99 | 2.73x ahead | 3.7x |
+| fib, peak memory (MiB) | 2.67 | bun 18.03 | 6.75x ahead | 1.5x |
+
+Nothing moved, which is the expected result and worth publishing as one. The `fib` absolute went from 2329 ms to 1306 ms, which looks like the interpreter got nearly twice as fast and did not: bun's own `fib` went from 92 ms to 57 ms in the same pair of runs, which is the same proportion, and two runtimes cannot both have been rewritten between two afternoons. The machine was quieter, that is all. The standing against bun went 25.23x behind to 22.95x behind, and that residual is the subject of the next paragraph rather than a win.
+
+This is the first run with the load average recorded, and the first thing it bought was an explanation for a discrepancy that had been sitting unexplained. The same katsu 0.1.4 tarball has now been measured against bun on this machine three times: at a load high enough to pin a core, 20.94x behind; at a load of 4.95 falling to 4.16, 22.95x behind; and by hand on a quiet machine, about 24x behind. The ratio moves with the load and it moves in katsu's favour as the machine gets busier, which is the opposite of flattering and is exactly why it is worth writing down. The likely reason is that katsu is one thread and bun is not: bun has collector and compiler threads that want cores of their own, so contention costs bun more than it costs a single threaded interpreter, and a loaded machine quietly hands katsu a result it has not earned. Treat that as the reading consistent with three runs rather than as a proven mechanism. Either way the correction goes the wrong way for us, so the number to plan against is the quiet one, and this is the argument for moving published runs onto dedicated hardware rather than onto whichever laptop is free.
+
+The memory story is unchanged and is still the half of the goal that is closest. 2.67 MiB of peak resident set against bun's 18.03 on the same workload, with the same caveat as before: there is no collector yet, `fib` allocates almost nothing, and the workload that does allocate is the one that dies out of memory.
+
+The failure reasons did not move at all this time. `new`, array literals and a collector are the three things standing between katsu and the other five compute workloads, and 0.1.4 was object model work underneath all three rather than any of them.
+
 ## The rules come before the numbers
 
 These are the rules this repository holds itself to, written down before there was anything to report.
@@ -139,6 +161,8 @@ A difference we cannot separate from noise is reported as no difference. The tes
 Losses are published in the same table as wins, with the same prominence. There is no separate page for the axes we do badly on.
 
 A competitor that could not be measured stays in the table with the reason. A missing row looks exactly like a beaten competitor to anybody skimming.
+
+Every run records the machine's one minute load average when it started and when it finished, and a run taken above half the core count says on its face that the machine was busy. Two samples rather than one, because a run takes long enough that a machine which was quiet for the first runtime and busy for the last has not measured the two of them against each other at all. This exists because the loaded run in the 0.1.3 section below had to have its warning written by hand after the fact, and a warning that depends on somebody remembering is a warning that will eventually be missing.
 
 Results taken on a shared CI runner are labelled as such on their face. Cloud runners are noisy enough that they are good for spotting a regression trend over time and bad for comparing runtimes, and the report says so at the top rather than in a footnote nobody reads.
 
