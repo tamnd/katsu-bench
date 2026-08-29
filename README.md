@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.2 ran 2 of the 27 axes in the last full run. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.3 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -90,6 +90,41 @@ The other three still need object model work as well: array literals for `json` 
 This is the reason the failure reason is printed in full rather than collapsed to "unsupported". A reason that changes between runs is a progress report, and a reason that does not change is a milestone that has not landed yet. It is also the reason a failure reason is a starting point for an estimate rather than an estimate, and this section is now written to say so.
 
 One thing found while checking that: `'abc'.length` evaluates to `undefined` under katsu 0.1.2 rather than to 3. It does not throw, which is worse than throwing, because a workload reading a length gets a wrong number rather than an error and everything downstream of it is quietly nonsense. Filed as [tamnd/katsu#58](https://github.com/tamnd/katsu/issues/58) rather than worked around here, because a benchmark harness that papers over a wrong answer in the thing it is measuring is worth nothing.
+
+## The first compute number, and it is a loss
+
+katsu 0.1.3 added `performance.now()`, `String()` and `JSON.stringify()`, which were the three names counted out in the table above, and `fib` runs. It is the first compute row this repository has ever published for katsu and it is a bad one. Measured from the published 0.1.3 tarball, same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-29-m4-macos-katsu-0.1.3.md`.
+
+| Axis | katsu 0.1.3 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 4.31 | bun 14.22 | 3.30x ahead | 3.0x |
+| Baseline memory at idle (MiB) | not yet | bun 12.56 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.71 | bun 60.61 | 35.41x ahead | goal reached |
+| fib, in process (ms) | 2329.34 | bun 92.31 | 25.23x behind | 252.3x |
+| fib, wall clock (ms) | 2334.36 | bun 109.09 | 21.40x behind | 214.0x |
+| fib, runtime overhead (ms) | 5.37 | bun 16.76 | 3.12x ahead | 3.2x |
+| fib, peak memory (MiB) | 2.70 | bun 18.25 | 6.75x ahead | 1.5x |
+
+Read the absolute numbers in this run with a warning attached, and it is a different warning from the usual one. The machine was not quiet. An unrelated user process held a core at 97 percent for the whole run and the load average was 5.83, and every absolute here is inflated by roughly a factor of three against the same machine two hours earlier. The way to see that is the cold start row across the two runs: katsu went 1.57 to 4.31, node 24.11 to 70.50, bun 5.31 to 14.22, deno 12.65 to 24.00. Every runtime moved the same way by a similar factor, which is a machine changing and not four runtimes changing. So compare across a row here and not against a different run. The katsu against bun cold start standing is 3.30x in this run against 3.38x in the quiet one, which is the same number.
+
+The compute loss survives that correction completely and is not a measurement artifact. A quiet head to head taken separately, five consecutive runs of each, put katsu at 1,055 ms against node's 63, bun's 45 and deno's 68, which is the same 23x behind bun that the loaded run reports. katsu loses `fib` by a factor of twenty odd and there is nothing subtle about why. `fib` is a call benchmark wearing an arithmetic benchmark's clothes, one comparison and one addition per call and nothing else, so it punishes inline caches, shape guards and a JIT, and katsu has none of the three. Two of them are M1 work and the third is M3.
+
+The memory column is the interesting one and it is the half of the goal this project might reach first. katsu runs `fib` in 2.70 MiB of peak resident set against node's 56.08 and bun's 18.25, which is 20.7x less than node and 6.75x less than the best rival, so the 10x resource goal is within 1.5x on this workload. Attach the obvious caveat before believing it: katsu has no garbage collector, `fib` allocates almost nothing, and the workload that does allocate is the one that dies. That is the next row.
+
+The failure reasons moved again, and one of them moved in a way worth calling out.
+
+| Workload | Blocked on at 0.1.2 | Blocked on at 0.1.3 |
+|---|---|---|
+| fib | `performance` is not defined | runs |
+| strings | `performance` is not defined | out of memory |
+| json | an array literal | an array literal |
+| nbody | an array literal | an array literal |
+| alloc | `new` | `new` |
+| sort | `new` | `new` |
+
+`strings` stopped failing on a missing name and started failing on exhausted memory, which means it now gets past the timing harness and into the workload before dying. That is progress and it is also the clearest statement yet of [tamnd/katsu#60](https://github.com/tamnd/katsu/issues/60): katsu has no collector, the heap is a bump allocator over a 4 GiB cage, and a program that allocates in a loop fills it and stops. The three remaining reasons are the same three as last time, array literals and `new`, both of which are object model work.
+
+The estimate in the previous section held up exactly. `fib` needed three names and got three names and now runs. `strings` was called out as not close, and it is not close: it needed most of `String.prototype`, a working sort and a collector, and it now demonstrates the collector part directly.
 
 ## The rules come before the numbers
 
