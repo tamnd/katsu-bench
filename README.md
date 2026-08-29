@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu ran 2 of the 27 axes in the last full run. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.2 ran 2 of the 27 axes in the last full run. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -50,6 +50,33 @@ Look at the maximum column before reading too much into any of it. Every runtime
 Read it with the obvious caveat attached, and the caveat is large. **katsu is ahead here because it does less, not because it is better.** There is no module system, no `process`, no event loop, no filesystem and no standard library beyond `console.log`, and Node is carrying every one of those inside its 23.83 ms. This number is a starting position rather than a result, and the interesting question is not whether we win today but how much of the lead survives the next eight milestones landing on top of it. That is precisely why the row is recorded now, while the answer is still unknown to us.
 
 The idle memory axis is still a failure reason, and for a good reason: a process with no event loop cannot idle. katsu exits after 410 ms rather than staying up, so there is no idle to sample. That row starts working in M2 and not before.
+
+## Where 0.1.2 stands
+
+katsu 0.1.2 is the first release measured from the published tarball rather than from a local `cargo build --release`, which is the binary a user would actually download. Same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-29-m4-macos-katsu-0.1.2.md`.
+
+| Axis | katsu 0.1.2 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 1.57 | bun 5.31 | 3.38x ahead | 3.0x |
+| Baseline memory at idle (MiB) | not yet | bun 12.30 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.70 | bun 60.61 | 35.74x ahead | goal reached |
+
+Read both moving rows as noise rather than as progress. Cold start went from 1.55 ms to 1.57 and the standing went from 3.21x to 3.38x, but the lead moved because Bun measured 5.31 ms this time against 4.97 last time, not because katsu got faster, and both differences are inside the run to run spread the IQR column already tells you about. The distribution grew from 1.66 MiB to 1.70, which is 40 KiB of binary bought by three milestones of language work, and it is the direction that number will keep going.
+
+The interesting change in this run is in the failure reasons rather than in the numbers, because they are a list of exactly what is missing and they moved.
+
+| Workload | Blocked on at 0.0.5 | Blocked on at 0.1.2 |
+|---|---|---|
+| fib | an object literal | `performance` is not defined |
+| strings | a `for` loop | `performance` is not defined |
+| json | an object literal | an array literal |
+| nbody | an array literal | an array literal |
+| alloc | `new` | `new` |
+| sort | `new` | `new` |
+
+Two of the six workloads have run out of language to be missing. `fib` and `strings` now parse, lower and start executing, and they stop on the first line of the timing harness, which is `performance.now()`. That makes one missing global the difference between two compute axes reporting a number and two compute axes reporting an excuse, and it is the smallest piece of work on this list by a wide margin. The other four still need object model work: array literals for `json` and `nbody`, and constructors, which means prototype chains, for `alloc` and `sort`.
+
+This is the reason the failure reason is printed in full rather than collapsed to "unsupported". A reason that changes between runs is a progress report, and a reason that does not change is a milestone that has not landed yet.
 
 ## The rules come before the numbers
 
