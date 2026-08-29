@@ -74,9 +74,22 @@ The interesting change in this run is in the failure reasons rather than in the 
 | alloc | `new` | `new` |
 | sort | `new` | `new` |
 
-Two of the six workloads have run out of language to be missing. `fib` and `strings` now parse, lower and start executing, and they stop on the first line of the timing harness, which is `performance.now()`. That makes one missing global the difference between two compute axes reporting a number and two compute axes reporting an excuse, and it is the smallest piece of work on this list by a wide margin. The other four still need object model work: array literals for `json` and `nbody`, and constructors, which means prototype chains, for `alloc` and `sort`.
+Two of the six workloads have run out of language to be missing. `fib` and `strings` now parse, lower and start executing, and they get as far as the first line of the timing harness before stopping on `performance.now()`.
 
-This is the reason the failure reason is printed in full rather than collapsed to "unsupported". A reason that changes between runs is a progress report, and a reason that does not change is a milestone that has not landed yet.
+Read that carefully, because it is easy to read it as more than it is, and the first version of this section did. A failure reason names the first thing a workload hits, not the last. Adding `performance.now()` does not make either of these workloads run, it moves them to the next missing thing, and the honest question is how many more there are behind it. Counted by hand against the source of each workload:
+
+| Workload | Still needs, in the order it would hit them |
+|---|---|
+| fib | `performance.now()`, `String()`, `JSON.stringify()` |
+| strings | `performance.now()`, string `.length`, `.slice`, `.charCodeAt`, `.split`, `.join`, `Array.prototype.sort`, indexing, relational comparison on strings, `String()`, `JSON.stringify()` |
+
+So `fib` is genuinely close and `strings` is not. The recursive part of `fib` already runs and already gives the right answer, which was checked directly rather than assumed: `fib(20)` under katsu 0.1.2 prints 6765, and the object literal the workload builds its result line from prints correctly too. Three names stand between that and the first compute number this repository ever publishes for katsu. `strings` needs most of `String.prototype` and a working `Array.prototype.sort`, which is prototype chain work, which is the same thing `alloc` and `sort` are waiting for.
+
+The other three still need object model work as well: array literals for `json` and `nbody`, and constructors for `alloc` and `sort`.
+
+This is the reason the failure reason is printed in full rather than collapsed to "unsupported". A reason that changes between runs is a progress report, and a reason that does not change is a milestone that has not landed yet. It is also the reason a failure reason is a starting point for an estimate rather than an estimate, and this section is now written to say so.
+
+One thing found while checking that: `'abc'.length` evaluates to `undefined` under katsu 0.1.2 rather than to 3. It does not throw, which is worse than throwing, because a workload reading a length gets a wrong number rather than an error and everything downstream of it is quietly nonsense. Filed as [tamnd/katsu#58](https://github.com/tamnd/katsu/issues/58) rather than worked around here, because a benchmark harness that papers over a wrong answer in the thing it is measuring is worth nothing.
 
 ## The rules come before the numbers
 
