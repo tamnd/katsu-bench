@@ -170,6 +170,32 @@ The memory row is the one worth pointing at. 2.72 MiB of peak resident set on `f
 
 Six of the 27 axes ran, the same six as last time, and the four failure reasons are unchanged: `new` blocks `alloc` and `sort`, an array literal blocks `json` and `nbody`, the missing collector blocks `strings`, and the missing event loop blocks idle memory because a process that exits after 401 ms has no idle to sample. Two releases in a row with the same blockers is not drift, it is what depth first work on the object model looks like from the outside, but it does mean this report keeps measuring the same one workload and the scoreboard cannot say much until that changes.
 
+## Where 0.1.6 stands, and the one thing that did move
+
+katsu 0.1.6 is the release where a function became an object. A function can carry properties now, so `Foo.prototype` and the statics on a constructor are ordinary properties, and `Object` is a function rather than a namespace object with the wrong type tag. Measured from the published 0.1.6 tarball, same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-31-m4-macos-katsu-0.1.6.md`.
+
+| Axis | katsu 0.1.6 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 1.59 | bun 6.07 | 3.82x ahead | 2.6x |
+| Baseline memory at idle (MiB) | not yet | bun 12.27 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.74 | bun 60.61 | 34.77x ahead | goal reached |
+| fib, in process (ms) | 875.16 | bun 34.28 | 25.53x behind | 255.3x |
+| fib, wall clock (ms) | 877.76 | bun 41.56 | 21.12x behind | 211.2x |
+| fib, runtime overhead (ms) | 2.46 | bun 7.25 | 2.94x ahead | 3.4x |
+| fib, peak memory (MiB) | 2.70 | bun 18.03 | 6.67x ahead | 1.5x |
+
+The `fib` row got worse, from 23.58x behind bun to 25.53x, and this is the release where that number deserves a straight answer rather than the usual sentence about weather. Two things are true at once and both belong here.
+
+The first is that the session was slower for everybody. Node went from 49.27 ms to 53.38, deno from 49.99 to 56.54, bun from 33.47 to 34.28. That is between two and thirteen percent depending on which rival you pick, and katsu moved eleven percent in the same direction, which puts it inside the band the machine moved rather than outside it. The load average was 3.75 for this run against 3.70 for the last one, so the coarse measure of business says the two sessions were the same and the runtimes disagree with it by up to eleven percent. That is the noise floor of a shared laptop and it is the reason this repository keeps saying the ratio column is the one to read.
+
+The second is that there is a real mechanism this time, and it is small. A closure grew from sixteen bytes to twenty in this release, because a function now has a field pointing at the object its properties live in. `fib` makes no closures in its loop and hangs nothing off a function, so the only thing it can pay is the extra four bytes on the two functions it defines, and katsu's own microbenchmarks on a Linux box measured the call benchmarks inside noise across that change with one run of six showing three percent. So a couple of percent of the eleven is plausibly real and the rest is the machine. Nobody should read 25.53x as a regression of two points and nobody should read it as unchanged either.
+
+A direct head to head between the two release binaries was attempted to settle it and could not: the machine's load average went past 26 while it ran, and `fib` under the same binary varied between 2.4 and 5.9 seconds inside one alternating sequence. That failure is worth publishing too, because it is the clearest argument yet for the item this repository has been carrying since the first baseline. These numbers need dedicated hardware, and a run this noisy is not something a careful reading can fix afterwards.
+
+The memory row is unchanged at 2.70 MiB against bun's 18.03, which is the answer to the obvious worry about a release that made two heap objects bigger. `fib` allocates almost nothing either way. The row that will actually test the bigger closure is the one that allocates in a loop, and that row still does not run.
+
+Six of the 27 axes ran, the same six for the third release running, and the four failure reasons are unchanged: `new` blocks `alloc` and `sort`, an array literal blocks `json` and `nbody`, the missing collector blocks `strings`, and the missing event loop blocks idle memory. The first of those is the one to watch, because everything `new` was waiting for landed in this release.
+
 ## The rules come before the numbers
 
 These are the rules this repository holds itself to, written down before there was anything to report.
