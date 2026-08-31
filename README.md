@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.5 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.8 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -169,6 +169,28 @@ What the `fib` row did do is demonstrate the noise floor twice in one run, in op
 The memory row is the one worth pointing at. 2.72 MiB of peak resident set on `fib` against bun's 18.05 and node's 46.36, which is 6.64x better than the best rival and 17.1x better than node, and it is the closest published number to the half of the goal about resources. Be precise about what it measures. It is a fact about how little the interpreter allocates, not a fact about how well it cleans up, because there is nothing to clean up with. katsu has no garbage collector, the heap is a bump allocator over a cage, and the workload in this suite that does allocate in a loop is the one that dies out of memory. The honest version of this row is that katsu starts from a very good place on memory and has not yet paid for a collector, and the number to watch is what this row reads after [tamnd/katsu#60](https://github.com/tamnd/katsu/issues/60) lands.
 
 Six of the 27 axes ran, the same six as last time, and the four failure reasons are unchanged: `new` blocks `alloc` and `sort`, an array literal blocks `json` and `nbody`, the missing collector blocks `strings`, and the missing event loop blocks idle memory because a process that exits after 401 ms has no idle to sample. Two releases in a row with the same blockers is not drift, it is what depth first work on the object model looks like from the outside, but it does mean this report keeps measuring the same one workload and the scoreboard cannot say much until that changes.
+
+## Where 0.1.8 stands, and the axis that paid for it
+
+katsu 0.1.8 is the release with `new`, `instanceof` and the seven error constructors in it, which took test262 from 6.66 percent to 12.31 percent. Measured from the published 0.1.8 tarball, same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-31-m4-macos-katsu-0.1.8.md`. There is no 0.1.7 baseline because that tag published one crate of fifteen before crates.io rate limited it and 0.1.8 is the same tree released again.
+
+| Axis | katsu 0.1.8 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 1.68 | bun 5.67 | 3.37x ahead | 3.0x |
+| Baseline memory at idle (MiB) | not yet | bun 12.29 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.77 | bun 60.61 | 34.15x ahead | goal reached |
+| fib, in process (ms) | 781.89 | bun 33.43 | 23.39x behind | 233.9x |
+| fib, wall clock (ms) | 784.40 | bun 40.36 | 19.44x behind | 194.4x |
+| fib, runtime overhead (ms) | 2.42 | bun 6.86 | 2.83x ahead | 3.5x |
+| fib, peak memory (MiB) | 2.73 | bun 18.02 | 6.59x ahead | 1.5x |
+
+The `fib` row improved from 25.53x behind bun to 23.39x and that is the session rather than the release. katsu went from 875.16 ms to 781.89, which is eleven percent, and every rival moved the same way in the same run: node from 53.38 to 48.80, deno from 56.54 to 48.98, bun from 34.28 to 33.43. That is a band of two to thirteen percent and katsu is inside it. There is also no mechanism pointing that way. Nothing in this release touched the call path, and the one structure that did change got bigger rather than smaller, because the interpreter grew from 72 bytes to 80 to carry a flag saying the current frame is a construct. A release with no plausible mechanism for a gain, measuring a gain the size of the machine's own drift, has not measured a gain.
+
+Cold start is the number worth reading in this report, because it moved the other way. katsu went from 1.59 ms to 1.68 while node, bun and deno all got between six and nine percent quicker in the same quieter session. The interquartile ranges of the two katsu runs touch at one end and no more than that, so this is at the edge of what this machine can call, but the direction is against the session and there is a mechanism behind it: every realm now builds seven error constructors and their prototypes before the first line of the program runs, and the binary grew from 1.74 MiB to 1.77. A tenth of a millisecond is a small price and it is being paid on the axis where katsu leads by the most, which is exactly the axis where a slow accumulation of small prices is easiest to miss.
+
+Peak memory on `fib` went from 2.70 MiB to 2.73, which is the closest thing to nothing this report can measure.
+
+Six of the 27 axes ran, the same six for the fourth release running, but two of the failure reasons moved and that is the interesting part. `alloc` and `sort` used to stop on `new` and now stop on `Array is not defined`, which is the same pattern the conformance number has been showing all along: each construct implemented moves the wall along the line rather than knocking it down, until the last one does. `json` and `nbody` still stop on an array literal, `strings` still runs out of memory because there is no collector, and idle memory still has no idle to sample because there is no event loop. Arrays are what four of those five are waiting on.
 
 ## Where 0.1.6 stands, and the one thing that did move
 
