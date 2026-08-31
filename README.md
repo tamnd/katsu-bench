@@ -2,7 +2,7 @@
 
 Benchmarks for [katsu](https://github.com/tamnd/katsu) against Node.js, Bun and Deno. Every axis is published win or lose, the machine is named, and the command is in the repository so anybody can rerun it.
 
-**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.4 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
+**Status: the harness works, the runtime it exists to measure mostly does not yet.** katsu 0.1.5 ran 6 of the 27 axes in the last full run, up from 2. Everything else is Node against Bun against Deno with katsu marked as unable to run it and the reason printed. That is deliberate and it is the point of doing this now. A benchmark harness first proves it can measure runtimes whose relative performance is already public knowledge, because a harness that has only ever been pointed at your own project is a harness you cannot trust when it agrees with you. It also fixes the baseline before we have any incentive to move it.
 
 The report opens with a scoreboard called `Distance to the goal`, one row per axis, saying where katsu stands against the best rival on that axis and how much is left to find. It measures against the best rival rather than against Node, because ten times better than the slowest competitor is not the claim. Axes katsu cannot run say so, and the paragraph under the table says how many of those there are, so the scoreboard cannot improve by quietly dropping the axes we fail.
 
@@ -147,6 +147,28 @@ This is the first run with the load average recorded, and the first thing it bou
 The memory story is unchanged and is still the half of the goal that is closest. 2.67 MiB of peak resident set against bun's 18.03 on the same workload, with the same caveat as before: there is no collector yet, `fib` allocates almost nothing, and the workload that does allocate is the one that dies out of memory.
 
 The failure reasons did not move at all this time. `new`, array literals and a collector are the three things standing between katsu and the other five compute workloads, and 0.1.4 was object model work underneath all three rather than any of them.
+
+## Where 0.1.5 stands, and why the first inline cache does not show up here
+
+katsu 0.1.5 is the first release with an inline cache in it. Every property read site now remembers the shape it last saw and the position the property was at, so a site that keeps seeing the same kind of object skips the walk up the shape chain entirely. In katsu's own microbenchmarks that took a hot property read from 12.1 ns to 9.5 ns, about fourteen percent off the line. None of that should be visible in this report, and the point of publishing the run is to say so out loud rather than to leave the release unmeasured. Measured from the published 0.1.5 tarball, same machine, 25 runs after 3 discarded, in `results/baselines/2026-08-31-m4-macos-katsu-0.1.5.md`.
+
+| Axis | katsu 0.1.5 | Best rival | Standing | Left to find |
+|---|---:|---|---|---|
+| Cold start (ms) | 1.99 | bun 6.59 | 3.31x ahead | 3.0x |
+| Baseline memory at idle (MiB) | not yet | bun 12.25 | cannot run this yet | all of it |
+| Distribution size (MiB) | 1.74 | bun 60.61 | 34.77x ahead | goal reached |
+| fib, in process (ms) | 789.33 | bun 33.47 | 23.58x behind | 235.8x |
+| fib, wall clock (ms) | 791.76 | bun 40.48 | 19.56x behind | 195.6x |
+| fib, runtime overhead (ms) | 2.37 | bun 6.90 | 2.91x ahead | 3.4x |
+| fib, peak memory (MiB) | 2.72 | bun 18.05 | 6.64x ahead | 1.5x |
+
+The only compute workload katsu can run is `fib`, and `fib` reads no properties. It is a function, a comparison, an addition and two recursive calls, so there is no access site in it for a cache to fill and no shape chain for a cache to skip. A change that makes property reads fourteen percent faster is worth exactly nothing on this workload and the table agrees with that prediction, which is the useful part: the harness did not invent a win where the design says there cannot be one.
+
+What the `fib` row did do is demonstrate the noise floor twice in one run, in opposite directions. Against node the ratio went from 17.47x behind at 0.1.4 to 16.02x behind here, which looks like an eight percent gain. Against bun it went from 22.95x behind to 23.58x behind, which looks like a three percent loss. The same binary cannot have got faster and slower in the same afternoon, and neither figure is a result. The machine was quieter for this run, a load average of 3.70 against the 4.95 the 0.1.4 run started at, and the three runtimes did not absorb that quiet in the same proportion. Read both numbers as unchanged, and read the pair of them as a reminder of how much of a cross release comparison on a shared laptop is weather.
+
+The memory row is the one worth pointing at. 2.72 MiB of peak resident set on `fib` against bun's 18.05 and node's 46.36, which is 6.64x better than the best rival and 17.1x better than node, and it is the closest published number to the half of the goal about resources. Be precise about what it measures. It is a fact about how little the interpreter allocates, not a fact about how well it cleans up, because there is nothing to clean up with. katsu has no garbage collector, the heap is a bump allocator over a cage, and the workload in this suite that does allocate in a loop is the one that dies out of memory. The honest version of this row is that katsu starts from a very good place on memory and has not yet paid for a collector, and the number to watch is what this row reads after [tamnd/katsu#60](https://github.com/tamnd/katsu/issues/60) lands.
+
+Six of the 27 axes ran, the same six as last time, and the four failure reasons are unchanged: `new` blocks `alloc` and `sort`, an array literal blocks `json` and `nbody`, the missing collector blocks `strings`, and the missing event loop blocks idle memory because a process that exits after 401 ms has no idle to sample. Two releases in a row with the same blockers is not drift, it is what depth first work on the object model looks like from the outside, but it does mean this report keeps measuring the same one workload and the scoreboard cannot say much until that changes.
 
 ## The rules come before the numbers
 
